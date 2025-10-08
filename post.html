@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>投稿詳細 - Study Board</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/theme.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@2.4.0/dist/purify.min.js"></script>
+
+<!-- Firebase -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-storage-compat.js"></script>
+</head>
+<body>
+<div class="container">
+  <div id="post-card" class="card"></div>
+
+  <div class="card">
+    <h3>返信</h3>
+    <div id="reply-list"></div>
+
+    <div style="margin-top:12px">
+      <textarea id="reply-input" placeholder="返信を入力（Markdown可）"></textarea>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+        <label><input type="checkbox" id="is-answer" /> 投稿に対する答え・質問（ハイライト）</label>
+        <input id="reply-image" type="file" accept="image/*" style="margin-left:auto" />
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
+        <button id="send-reply" class="btn">返信を送信</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<div id="loading-overlay" style="display:none"><div class="spinner card">読み込み中…</div></div>
+
+<script>
+/* Firebase init */
+const firebaseConfig = {
+  apiKey: "AIzaSyBfstQdl-avHfBWaiPkC0Bzwm_9apWe6Mo",
+  authDomain: "school-board-e2ee2.firebaseapp.com",
+  projectId: "school-board-e2ee2",
+  storageBucket: "school-board-e2ee2.appspot.com",
+  messagingSenderId: "257360614407",
+  appId: "1:257360614407:web:7cdae33b9ac7d7a671c6a2"
+};
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth(), db = firebase.firestore(), storage = firebase.storage();
+
+const $ = s => document.querySelector(s);
+const postId = new URLSearchParams(location.search).get('id');
+let currentUser = null;
+let postDoc = null;
+
+auth.onAuthStateChanged(u=>{ currentUser = u || null; loadPost(); startReplyListener(); });
+
+function showToast(m){ window.showToast ? window.showToast(m) : alert(m); }
+function showLoading(on=true){ window.showLoading ? window.showLoading(on) : $('#loading-overlay').style.display = on ? 'flex' : 'none'; }
+function formatDate(ts){ if(!ts) return ''; try{return new Date(ts.seconds*1000).toLocaleString()}catch(e){return''} }
+function escapeHtml(s){ if(!s) return ''; return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function loadPost(){
+  if(!postId){ $('#post-card').innerHTML = '<div class="card">投稿IDがありません</div>'; return; }
+  showLoading(true);
+  const doc = await db.collection('posts').doc(postId).get();
+  if(!doc.exists){ $('#post-card').innerHTML = '<div class="card">投稿が見つかりません</div>'; showLoading(false); return; }
+  postDoc = { id: doc.id, ...doc.data() };
+  renderPost(postDoc);
+  showLoading(false);
+}
+
+function renderPost(p){
+  const tags = (p.hashtags||[]).map(h=>`<span class="tag">${h}</span>`).join(' ');
+  const sanitized = DOMPurify.sanitize(marked.parse(p.content || ''), { ALLOWED_TAGS: DOMPurify.getDefaultWhiteList() });
+  $('#post-card').innerHTML = `
+    <div style="display:flex;gap:12px;align-items:flex-start">
+      <div style="flex:1">
+        <div class="post-meta"><strong>${escapeHtml(p.userName||'匿名')}</strong> ・ ${formatDate(p.createdAt)}</div>
+        <div class="post-title">${escapeHtml(p.title||'(無題)')}</div>
+        <div class="content" id="post-content">${sanitized}</div>
+        <div class="tags" style="margin-top:10px">${tags}</div>
+        <div class="actions" style="margin-top:10px">
+          <button id="like-post" class="icon-btn">👍 <span id="post-like-count">${p.goodCount||0}</span></button>
+          <button id="bookmark-post" class="icon-btn">⭐</button>
+          <button id="share-post" class="icon-btn">🔗</button>
+          ${currentUser && currentUser.uid === p.userId ? '<button id="solve-post" class="icon-btn">✅ 解決済みにする</button>' : ''}
+        </div>
+      </div>
+    </div>
+  `;
+  $('#share-post').addEventListener('click', ()=> copyToClipboard(location.href));
+  $('#like-post').addEventListener('click', ()=> toggleLikePost(p.id));
+  $('#bookmark-post').addEventListener('click', ()=> toggleBookmarkPost(p.id));
+  if(currentUser && Array.isArray(p.goodUserIds) && p.goodUserIds.includes(currentUser.uid)) $('#like-post').classList.add('liked');
+}
+
+/* replies */
+let replyListener = null;
+function startReplyListener(){
+  if(replyListener) replyListener();
+  replyListener = db.collection('replies').where('postId','==',postId).orderBy('createdAt','asc').onSnapshot(snap=>{
+    const arr = snap.docs.map(d=>({ id:d.id, ...d.data() }));
+    renderReplies(arr);
+  });
+}
+
+function renderReplies(flat){
+  const map = {};
+  flat.forEach(r => { map[r.id] = { ...r, children: [] }; });
+  const roots = [];
+  flat.forEach(r => {
+    if(r.parentId && map[r.parentId]) map[r.parentId].children.push(map[r.id]);
+    else roots.push(map[r.id]);
+  });
+  const list = $('#reply-list'); list.innerHTML = '';
+  roots.forEach(r => list.appendChild(renderReplyNode(r)));
+}
+
+function renderReplyNode(node){
+  const el = document.createElement('div'); el.className='reply';
+  const sanitized = DOMPurify.sanitize(marked.parse(node.content||''), { ALLOWED_TAGS: DOMPurify.getDefaultWhiteList() });
+  el.innerHTML = `
+    <div class="reply-meta"><strong>${escapeHtml(node.userName||'匿名')}</strong> ・ ${formatDate(node.createdAt)}</div>
+    <div class="reply-body">${sanitized}</div>
+    <div class="reply-actions" data-id="${node.id}">
+      <button class="icon-btn like-reply">👍 <span class="count">${node.goodCount||0}</span></button>
+      <button class="icon-btn reply-reply">返信</button>
+      ${currentUser && currentUser.uid === node.userId ? '<button class="icon-btn del-reply" style="color:var(--accent-strong)">🗑 削除</button>' : ''}
+      ${postDoc && currentUser && currentUser.uid === postDoc.userId ? `<button class="icon-btn best-reply">⭐ ベスト</button>` : ''}
+    </div>
+    <div class="reply-children"></div>
+  `;
+  const actions = el.querySelector('.reply-actions');
+  actions.querySelector('.like-reply').addEventListener('click', ()=> toggleLikeReply(node.id, actions.querySelector('.like-reply')));
+  actions.querySelector('.reply-reply').addEventListener('click', ()=> { $('#reply-input').focus(); $('#reply-input').dataset.parent = node.id; });
+  const del = actions.querySelector('.del-reply'); if(del) del.addEventListener('click', async ()=> { if(confirm('この返信を削除しますか？')){ await db.collection('replies').doc(node.id).delete(); showToast('削除しました'); } });
+  const best = actions.querySelector('.best-reply'); if(best) best.addEventListener('click', async ()=> { await db.collection('replies').doc(node.id).set({ isBest:true }, { merge:true }); await db.collection('posts').doc(postId).update({ solved:true, bestReplyId: node.id }); showToast('ベスト回答に設定しました'); });
+  const childWrap = el.querySelector('.reply-children'); (node.children||[]).forEach(c => childWrap.appendChild(renderReplyNode(c)));
+  return el;
+}
+
+/* toggle like post */
+async function toggleLikePost(pid){
+  if(!currentUser){ showToast('ログインが必要です'); return; }
+  const btn = $('#like-post');
+  btn.disabled = true; btn.classList.add('like-pulse'); setTimeout(()=>btn.classList.remove('like-pulse'),420);
+  try{
+    const ref = db.collection('posts').doc(pid);
+    await db.runTransaction(async tr=>{
+      const s = await tr.get(ref);
+      const data = s.data();
+      const uids = data.goodUserIds || []; let cnt = data.goodCount || 0;
+      if(uids.includes(currentUser.uid)){ uids.splice(uids.indexOf(currentUser.uid),1); cnt--; tr.update(ref,{goodUserIds:uids,goodCount:cnt}); btn.classList.remove('liked'); }
+      else { uids.push(currentUser.uid); cnt++; tr.update(ref,{goodUserIds:uids,goodCount:cnt}); btn.classList.add('liked'); if(data.userId && data.userId !== currentUser.uid) db.collection('notifications').add({ to: data.userId, text: `${currentUser.displayName||'誰か'} があなたの投稿にいいねしました`, createdAt: firebase.firestore.FieldValue.serverTimestamp(), read:false }); }
+      $('#post-like-count').textContent = cnt;
+    });
+  }catch(e){ console.error(e); showToast('処理に失敗しました'); } finally { btn.disabled=false; }
+}
+
+/* toggle bookmark */
+async function toggleBookmarkPost(pid){
+  if(!currentUser){ showToast('ログイン'); return; }
+  try{
+    const bmRef = db.collection('users').doc(currentUser.uid).collection('bookmarks').doc(pid);
+    const s = await bmRef.get();
+    if(s.exists){ await bmRef.delete(); showToast('ブックマークを解除しました'); $('#bookmark-post').classList.remove('bookmarked'); }
+    else { await bmRef.set({ postId: pid, createdAt: firebase.firestore.FieldValue.serverTimestamp() }); showToast('ブックマークに追加しました'); $('#bookmark-post').classList.add('bookmarked'); }
+  }catch(e){ console.error(e); }
+}
+
+/* reply send */
+$('#send-reply').addEventListener('click', async ()=>{
+  if(!currentUser){ showToast('ログインしてください'); return; }
+  const text = $('#reply-input').value.trim(); if(!text){ showToast('本文を入力してください'); return; }
+  const parentId = $('#reply-input').dataset.parent || null;
+  showLoading(true);
+  try{
+    let imageUrl = '';
+    const f = $('#reply-image').files[0];
+    if(f){ const ref = storage.ref().child(`replies/${postId}/${Date.now()}_${f.name}`); await ref.put(f); imageUrl = await ref.getDownloadURL(); }
+    await db.collection('replies').add({ postId, parentId, content:text, userId: currentUser.uid, userName: currentUser.displayName || (currentUser.email||'').split('@')[0], goodCount:0, goodUserIds:[], isBest:false, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+    await db.collection('posts').doc(postId).update({ replyCount: firebase.firestore.FieldValue.increment(1) });
+    showToast('返信を投稿しました');
+    $('#reply-input').value=''; delete $('#reply-input').dataset.parent;
+  }catch(e){ console.error(e); showToast('送信失敗'); } finally{ showLoading(false); }
+});
+
+/* toggle like reply */
+async function toggleLikeReply(replyId, btn){
+  if(!currentUser){ showToast('ログイン'); return; }
+  btn.disabled = true; btn.classList.add('like-pulse'); setTimeout(()=> btn.classList.remove('like-pulse'),420);
+  try{
+    const ref = db.collection('replies').doc(replyId);
+    await db.runTransaction(async tr=>{
+      const s = await tr.get(ref); const d = s.data(); const uids = d.goodUserIds || []; let cnt = d.goodCount || 0;
+      if(uids.includes(currentUser.uid)){ uids.splice(uids.indexOf(currentUser.uid),1); cnt--; tr.update(ref,{goodUserIds:uids,goodCount:cnt}); btn.classList.remove('liked'); }
+      else { uids.push(currentUser.uid); cnt++; tr.update(ref,{goodUserIds:uids,goodCount:cnt}); btn.classList.add('liked'); }
+      btn.querySelector('.count').textContent = cnt;
+    });
+  }catch(e){ console.error(e); showToast('処理失敗'); } finally{ btn.disabled=false; }
+}
+
+/* helpers */
+function copyToClipboard(s){ navigator.clipboard.writeText(s).then(()=> showToast('コピーしました'), ()=> showToast('コピー失敗')); }
+</script>
+</body>
+</html>
