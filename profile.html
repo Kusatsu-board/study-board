@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>プロフィール - Study Board</title>
+
+<link rel="stylesheet" href="assets/style.css">
+<!-- theme.js は nav の注入・showLoading/showToast を提供します -->
+<script src="assets/theme.js" defer></script>
+
+<!-- Firebase (compat) -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-storage-compat.js"></script>
+</head>
+<body>
+  <!-- nav は assets/theme.js が自動で注入します (#nav がなくても自動で挿入されるはず) -->
+  <div id="nav"></div>
+
+  <main class="container">
+    <div id="profile-card" class="card profile-head" style="display:flex;gap:16px;align-items:center;">
+      <img id="user-icon" src="" alt="icon" style="width:110px;height:110px;border-radius:999px;object-fit:cover;border:3px solid var(--accent);">
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;gap:12px;justify-content:space-between;">
+          <div>
+            <h2 id="user-name" style="margin:0"></h2>
+            <div id="user-grade" class="muted" style="margin-top:4px"></div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <!-- ハート（ユーザーに対するいいね） -->
+            <button id="heart-user" class="icon-btn" title="このユーザーにいいね">♡ <span id="user-like-count">0</span></button>
+            <!-- プロフィールページ専用のログアウトボタン -->
+            <button id="logout-profile-btn" class="btn" style="background:var(--danger);display:none">ログアウト</button>
+          </div>
+        </div>
+
+        <div id="badges" style="margin-top:10px"></div>
+        <div style="margin-top:8px;color:var(--muted)">最終ログイン：<span id="user-lastlogin"></span></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h3>自己紹介</h3>
+      <div id="user-bio" style="white-space:pre-wrap"></div>
+      <h4 style="margin-top:10px">好きな教科</h4>
+      <div id="user-fav"></div>
+      <h4 style="margin-top:10px">趣味</h4>
+      <div id="user-hobby"></div>
+    </div>
+
+    <div id="owner-area" class="card" style="margin-top:12px;display:none">
+      <h3>プロフィール編集</h3>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <label>アイコン<input type="file" id="icon-input" accept="image/*" /></label>
+      </div>
+      <label>自己紹介<textarea id="bio-input" class="input" style="min-height:120px"></textarea></label>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <input id="fav-input" class="input" placeholder="好きな教科" />
+        <input id="hobby-input" class="input" placeholder="趣味" />
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
+        <button id="save-profile" class="btn">保存</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h3>最近の投稿</h3>
+      <div id="recent-posts"></div>
+    </div>
+  </main>
+
+  <div id="toast"></div>
+  <!-- theme.js が showLoading() を提供するのでここではオーバーレイを作らない（存在すれば共通で使われます） -->
+
+<script>
+  /* Firebase 設定（既存のプロジェクト値を使用） */
+  const firebaseConfig = {
+    apiKey: "AIzaSyBfstQdl-avHfBWaiPkC0Bzwm_9apWe6Mo",
+    authDomain: "school-board-e2ee2.firebaseapp.com",
+    projectId: "school-board-e2ee2",
+    storageBucket: "school-board-e2ee2.appspot.com",
+    messagingSenderId: "257360614407",
+    appId: "1:257360614407:web:7cdae33b9ac7d7a671c6a2"
+  };
+  if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+  const auth = firebase.auth(), db = firebase.firestore(), storage = firebase.storage();
+
+  const $ = s => document.querySelector(s);
+  const queryUid = new URLSearchParams(location.search).get('uid');
+
+  let currentUser = null;
+  let viewingUid = queryUid || null;
+
+  function showToastSafe(msg){ window.showToast ? window.showToast(msg) : alert(msg); }
+  function showLoadingSafe(on){ window.showLoading ? window.showLoading(on) : null; }
+
+  // 初期化の際に残った読み込み表示を消す（安全対策）
+  document.addEventListener('DOMContentLoaded', ()=> { try { window.showLoading && window.showLoading(false); } catch(e){} });
+
+  // 認証状態を監視、かつプロフィール購読を開始
+  auth.onAuthStateChanged(user => {
+    currentUser = user || null;
+    // ログインしていない場合は login ページへ（theme.js と同様の扱い）
+    if(!currentUser){
+      if(!location.pathname.endsWith('login.html')) location.href = 'login.html';
+      return;
+    }
+    // 確定した viewingUid
+    if(!viewingUid) viewingUid = currentUser.uid;
+    subscribeProfile(viewingUid);
+    loadRecent(viewingUid);
+    // 表示する logout ボタンはログイン中のユーザーに見えるようにする
+    $('#logout-profile-btn').style.display = 'inline-block';
+  });
+
+  function subscribeProfile(uid){
+    db.collection('users').doc(uid).onSnapshot(doc => {
+      if(!doc.exists){ showToastSafe('ユーザーが見つかりません'); return; }
+      const data = doc.data();
+      renderProfile(uid, data);
+    }, err => console.error(err));
+  }
+
+  function renderProfile(uid, data){
+    $('#user-icon').src = data.iconUrl || 'https://upload.wikimedia.org/wikipedia/commons/9/99/Sample_User_Icon.png';
+    $('#user-name').textContent = data.displayName || data.username || '不明';
+    $('#user-grade').textContent = data.grade || '未設定';
+    $('#user-bio').textContent = data.bio || '';
+    $('#user-fav').textContent = data.fav || '';
+    $('#user-hobby').textContent = data.hobby || '';
+    $('#user-lastlogin').textContent = data.lastLogin ? new Date(data.lastLogin.seconds*1000).toLocaleString() : (data.lastSignIn || '不明');
+    $('#user-like-count').textContent = data.likeCount || 0;
+
+    // badges
+    const badges = [];
+    if((data.postCount||0) >= 10) badges.push('投稿職人');
+    if((data.goodCount||0) >= 20) badges.push('人気ユーザー');
+    if((data.bestAnswerCount||0) >= 5) badges.push('知識王');
+    $('#badges').innerHTML = badges.map(b=>`<span class="badge">${b}</span>`).join(' ');
+
+    // 編集エリアはプロフィール所有者だけ
+    if(currentUser && currentUser.uid === uid){
+      $('#owner-area').style.display = 'block';
+      $('#bio-input').value = data.bio || '';
+      $('#fav-input').value = data.fav || '';
+      $('#hobby-input').value = data.hobby || '';
+    } else {
+      $('#owner-area').style.display = 'none';
+    }
+  }
+
+  // 最近の投稿一覧
+  function loadRecent(uid){
+    db.collection('posts').where('userId','==',uid).orderBy('createdAt','desc').limit(6).get().then(snap=>{
+      const el = $('#recent-posts'); el.innerHTML = '';
+      if(snap.empty){ el.innerHTML = '<div class="muted">投稿はまだありません</div>'; return; }
+      snap.forEach(d=>{
+        const p = d.data();
+        const row = document.createElement('div'); row.className='card'; row.style.marginBottom='8px';
+        row.innerHTML = `<a href="post.html?id=${d.id}" style="text-decoration:none;color:inherit"><div style="font-weight:700">${p.title||'(無題)'}</div><div class="small">${new Date(p.createdAt.seconds*1000).toLocaleString()}</div></a>`;
+        el.appendChild(row);
+      });
+    });
+  }
+
+  // 保存（プロフィール編集）
+  $('#save-profile').addEventListener('click', async ()=>{
+    if(!currentUser || currentUser.uid !== viewingUid) return;
+    showLoadingSafe(true);
+    try{
+      let iconUrl = null;
+      const file = $('#icon-input').files[0];
+      if(file){
+        const ref = storage.ref().child(`icons/${currentUser.uid}/${Date.now()}_${file.name}`);
+        await ref.put(file);
+        iconUrl = await ref.getDownloadURL();
+      }
+      const updates = {
+        bio: $('#bio-input').value,
+        fav: $('#fav-input').value,
+        hobby: $('#hobby-input').value,
+        lastLogin: firebase.firestore.FieldValue.serverTimestamp()
+      };
+      if(iconUrl) updates.iconUrl = iconUrl;
+      await db.collection('users').doc(currentUser.uid).set(updates, { merge:true });
+      showToastSafe('保存しました');
+    } catch(e){ console.error(e); showToastSafe('保存に失敗しました'); }
+    finally{ showLoadingSafe(false); }
+  });
+
+  // ハート（ユーザーにいいね）
+  $('#heart-user').addEventListener('click', async ()=>{
+    if(!currentUser){ showToastSafe('ログインが必要です'); return; }
+    const uid = viewingUid;
+    const ref = db.collection('users').doc(uid);
+    try{
+      await db.runTransaction(async tr=>{
+        const s = await tr.get(ref);
+        if(!s.exists) return;
+        let { likeCount=0, likedUserIds=[] } = s.data();
+        if(Array.isArray(likedUserIds) && likedUserIds.includes(currentUser.uid)){
+          likeCount--; likedUserIds = likedUserIds.filter(x=>x!==currentUser.uid);
+        } else {
+          likeCount++; likedUserIds = likedUserIds.concat(currentUser.uid);
+        }
+        tr.update(ref, { likeCount, likedUserIds });
+      });
+    }catch(e){ console.error(e); showToastSafe('操作に失敗しました'); }
+  });
+
+  // プロフィールページ内のログアウトボタン
+  $('#logout-profile-btn').addEventListener('click', async ()=>{
+    if(!currentUser) { showToastSafe('ログインされていません'); return; }
+    try{
+      showLoadingSafe(true);
+      await auth.signOut();
+      showToastSafe('ログアウトしました');
+      setTimeout(()=> location.href = 'login.html', 700);
+    }catch(e){
+      console.error(e);
+      showToastSafe('ログアウトに失敗しました');
+    }finally{
+      showLoadingSafe(false);
+    }
+  });
+
+  // 初期的に hide logout button until auth state sets it visible
+  try { $('#logout-profile-btn').style.display = 'none'; } catch(e){}
+</script>
+</body>
+</html>

@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Study Board - ログイン / 新規登録</title>
+
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/theme.js" defer></script>
+
+<!-- Firebase -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+</head>
+
+<body>
+  <main class="container" style="max-width:400px; text-align:center;">
+    <div class="card" style="padding:2rem 1.6rem; animation:fadeIn .6s ease;">
+      <h1 style="font-weight:700; margin-bottom:1rem;">Study Board</h1>
+      <p style="color:var(--muted); margin-bottom:1.6rem;">学びをつなぐ、あなたの掲示板</p>
+
+      <div id="form-mode" style="display:flex; justify-content:center; gap:1rem; margin-bottom:1rem;">
+        <button id="login-tab" class="btn" style="flex:1;">ログイン</button>
+        <button id="signup-tab" class="btn" style="flex:1; background:var(--card); color:var(--text); border:1px solid var(--border);">新規登録</button>
+      </div>
+
+      <div id="form-fields" style="display:flex; flex-direction:column; gap:0.8rem;">
+        <input id="username" class="input" placeholder="ユーザー名（2文字以上）">
+        <input id="password" class="input" type="password" placeholder="パスワード">
+        <input id="password2" class="input" type="password" placeholder="パスワードの確認" style="display:none;">
+        <input id="studentId" class="input" placeholder="生徒ID（未実装）" style="display:none;">
+      </div>
+
+      <button id="submit-btn" class="btn" style="width:100%; margin-top:1rem;">ログイン</button>
+
+      <div style="margin-top:1rem;">
+        <button class="icon-btn" onclick="toggleTheme()" data-tip="テーマ切り替え">
+          <i data-lucide="moon"></i>
+        </button>
+      </div>
+    </div>
+  </main>
+
+  <div id="loading"><div class="spinner"></div></div>
+  <div id="toast"></div>
+
+<script>
+/* Firebase 初期化 */
+const firebaseConfig={
+  apiKey:"AIzaSyBfstQdl-avHfBWaiPkC0Bzwm_9apWe6Mo",
+  authDomain:"school-board-e2ee2.firebaseapp.com",
+  projectId:"school-board-e2ee2",
+  storageBucket:"school-board-e2ee2.appspot.com",
+  messagingSenderId:"257360614407",
+  appId:"1:257360614407:web:7cdae33b9ac7d7a671c6a2"
+};
+if(!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+const auth=firebase.auth(), db=firebase.firestore();
+
+const $=s=>document.querySelector(s);
+let isSignup=false;
+
+/* モード切り替え */
+$('#login-tab').onclick=()=>switchMode(false);
+$('#signup-tab').onclick=()=>switchMode(true);
+function switchMode(signup){
+  isSignup=signup;
+  $('#password2').style.display=signup?'block':'none';
+  $('#studentId').style.display=signup?'block':'none';
+  $('#submit-btn').textContent=signup?'新規登録':'ログイン';
+  $('#login-tab').style.background=signup?'var(--card)':'var(--accent)';
+  $('#login-tab').style.color=signup?'var(--text)':'#fff';
+  $('#signup-tab').style.background=signup?'var(--accent)':'var(--card)';
+  $('#signup-tab').style.color=signup?'#fff':'var(--text)';
+}
+
+/* ログイン・登録処理 */
+$('#submit-btn').onclick=async()=>{
+  const name=$('#username').value.trim();
+  const pass=$('#password').value.trim();
+  const pass2=$('#password2').value.trim();
+  if(name.length<2)return showToast('ユーザー名は2文字以上にしてください');
+  if(!pass)return showToast('パスワードを入力してください');
+  if(isSignup && pass!==pass2)return showToast('パスワードが一致しません');
+
+  showLoading(true);
+  try{
+    const email=`${name}@studyboard.fake`; // 疑似メール
+    if(isSignup){
+      const cred=await auth.createUserWithEmailAndPassword(email,pass);
+      const user=cred.user;
+      await db.collection('users').doc(user.uid).set({
+        displayName:name,
+        createdAt:firebase.firestore.FieldValue.serverTimestamp()
+      });
+      showToast('登録が完了しました！');
+      location.href='profile.html?uid='+user.uid;
+    }else{
+      await auth.signInWithEmailAndPassword(email,pass);
+      showToast('ログインしました');
+      location.href='index.html';
+    }
+  }catch(e){
+    console.error(e);
+    const msg=e.code?.includes('auth/user-not-found')?'ユーザーが見つかりません':
+              e.code?.includes('auth/wrong-password')?'パスワードが違います':
+              e.code?.includes('auth/email-already-in-use')?'このユーザー名は使われています':'ログインできませんでした';
+    showToast(msg);
+  }finally{ showLoading(false); }
+};
+
+updateIcons();
+</script>
+
+<style>
+@keyframes fadeIn {
+  from { opacity:0; transform:translateY(10px); }
+  to { opacity:1; transform:translateY(0); }
+}
+</style>
+</body>
+</html>
