@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>メッセージ - Study Board</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/theme.js" defer></script>
+<!-- Firebase libs -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-storage-compat.js"></script>
+<script src="assets/app.js" defer></script>
+</head>
+<body>
+  <div id="nav"></div>
+  <main class="container">
+    <div class="card" style="display:flex;gap:12px;align-items:flex-start">
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <h2 style="margin:0">メッセージ</h2>
+          <div id="chat-controls" style="display:flex;gap:8px;align-items:center">
+            <input id="search-chats" class="input" placeholder="チャット検索（名前・メッセージ）" style="width:260px">
+          </div>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:12px">
+          <aside style="width:300px">
+            <div id="chat-list"></div>
+          </aside>
+
+          <section style="flex:1;display:flex;flex-direction:column">
+            <div id="chat-header" class="card" style="margin-bottom:12px;display:flex;align-items:center;gap:12px">
+              <div id="chat-title">チャットを選択してください</div>
+            </div>
+            <div id="chat-messages" style="flex:1;overflow-y:auto;padding:12px;border-radius:8px;background:linear-gradient(180deg,var(--card),var(--card));min-height:320px"></div>
+
+            <div style="display:flex;gap:8px;align-items:center;margin-top:10px">
+              <input id="message-input" class="input" placeholder="メッセージを入力" />
+              <input id="message-file" type="file" accept="image/*" />
+              <button id="send-message" class="btn">送信</button>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </main>
+
+<script>
+/* dm.html ロジック（assets/app.js の SB を使う） */
+document.addEventListener('DOMContentLoaded', ()=> {
+  const chatListEl = document.getElementById('chat-list');
+  const messagesEl = document.getElementById('chat-messages');
+  const titleEl = document.getElementById('chat-title');
+  const inputEl = document.getElementById('message-input');
+  const fileEl = document.getElementById('message-file');
+  const sendBtn = document.getElementById('send-message');
+
+  let currentChatId = null;
+  let unsubMessages = null;
+
+  // チャット一覧購読（簡易）
+  SB.subscribeChats(list=>{
+    chatListEl.innerHTML='';
+    list.forEach(c=>{
+      const row = document.createElement('div');
+      row.className = 'card';
+      row.style.marginBottom='8px';
+      row.style.cursor='pointer';
+      row.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center">
+        <div><strong>${c.groupName || (c.participants && c.participants.filter(u=>u!==(firebase.auth().currentUser&&firebase.auth().currentUser.uid))[0]) || c.id}</strong>
+          <div class="muted small">${c.lastMessage||''}</div></div>
+        <div>${c.unread?'<span class="badge">'+c.unread+'</span>':''}</div>
+      </div>`;
+      row.addEventListener('click', ()=> openChat(c.id, c));
+      chatListEl.appendChild(row);
+    });
+  });
+
+  function openChat(chatId, meta){
+    if(unsubMessages) unsubMessages();
+    messagesEl.innerHTML='';
+    currentChatId = chatId;
+    titleEl.textContent = meta.groupName || 'チャット';
+    unsubMessages = SB.listenMessages(chatId, onMessage);
+    // mark recent messages as read after a short delay
+    setTimeout(async ()=>{
+      // collect latest 20 ids
+      const docs = await firebase.firestore().collection('messages').doc(chatId).collection('messages').orderBy('createdAt','desc').limit(20).get();
+      const ids = docs.docs.map(d=>d.id).reverse();
+      SB.markMessagesRead(chatId, ids);
+    }, 600);
+  }
+
+  function onMessage(msg){
+    // render message bubble
+    const me = firebase.auth().currentUser && firebase.auth().currentUser.uid;
+    const el = document.createElement('div');
+    el.style.display='flex';
+    el.style.marginBottom='8px';
+    el.style.justifyContent = (msg.senderId===me)?'flex-end':'flex-start';
+    const bubble = document.createElement('div');
+    bubble.style.maxWidth='70%';
+    bubble.style.padding='10px 12px';
+    bubble.style.borderRadius='12px';
+    bubble.style.background = (msg.senderId===me)?'var(--accent)':'var(--card)';
+    bubble.style.color = (msg.senderId===me)?'#fff':'var(--text)';
+    bubble.innerHTML = `<div style="font-size:.9rem;margin-bottom:6px">${msg.senderName||'匿名'}</div>
+                        <div style="white-space:pre-wrap">${msg.text||''}</div>`;
+    if(msg.imageUrl) {
+      const img = document.createElement('img');
+      img.src = msg.imageUrl;
+      img.style.maxWidth='220px';
+      img.style.display='block';
+      img.style.marginTop='8px';
+      img.style.borderRadius='8px';
+      bubble.appendChild(img);
+    }
+    // reactions
+    if(msg.reactions && Object.keys(msg.reactions).length){
+      const rwrap = document.createElement('div');
+      rwrap.style.marginTop='6px';
+      rwrap.className='muted small';
+      const counts = {};
+      Object.values(msg.reactions).forEach(e=> counts[e] = (counts[e]||0) + 1);
+      rwrap.textContent = Object.entries(counts).map(([k,v])=>`${k} ${v}`).join('  ');
+      bubble.appendChild(rwrap);
+    }
+    el.appendChild(bubble);
+    messagesEl.appendChild(el);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  sendBtn.addEventListener('click', async ()=>{
+    const text = inputEl.value.trim();
+    const file = fileEl.files[0];
+    if(!text && !file){ return; }
+    await SB.sendMessage({ toUid: null, chatId: currentChatId, text, file, type:'dm' });
+    inputEl.value=''; fileEl.value='';
+  });
+
+  // Quick new DM: open by ?uid=...
+  const q = new URLSearchParams(location.search);
+  if(q.has('uid')){
+    const otherUid = q.get('uid');
+    const cid = 'dm_' + [firebase.auth().currentUser && firebase.auth().currentUser.uid, otherUid].sort().join('_');
+    // open after auth ready
+    firebase.auth().onAuthStateChanged(()=> openChat(cid, { id: cid }));
+  }
+
+});
+</script>
+</body>
+</html>
