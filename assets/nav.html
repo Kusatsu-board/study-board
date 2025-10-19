@@ -1,10 +1,110 @@
 <nav class="site-nav" role="navigation" aria-label="Main nav">
   <a class="brand" href="index.html"><span class="logo">Study Board</span></a>
+
   <div class="links" role="menubar" aria-label="Main links">
     <a href="index.html">投稿一覧</a>
     <a href="ranking.html">ランキング</a>
     <a href="profile.html">プロフィール</a>
     <button id="theme-toggle" class="icon-btn" title="テーマ切替">🌗</button>
+
+    <!-- ⋮ メニューボタン -->
+    <button id="menu-toggle" class="icon-btn" title="メニュー" aria-label="Menu">⋮</button>
+  </div>
+
+  <!-- サイドメニュー -->
+  <div id="side-menu" class="side-menu" aria-hidden="true">
+    <button class="menu-item" onclick="location.href='dm.html'">メッセージ</button>
+    <button class="menu-item" onclick="location.href='friends.html'">友達</button>
+    <button class="menu-item" onclick="location.href='notifications.html'">通知</button>
+    <hr>
+    <button class="menu-item" onclick="openThemePanel()">デザイン</button>
   </div>
 </nav>
+
 <div id="toast"></div>
+
+<script>
+// サイドメニュー開閉
+document.addEventListener('DOMContentLoaded', () => {
+  const toggle = document.getElementById('menu-toggle');
+  const menu = document.getElementById('side-menu');
+
+  toggle.addEventListener('click', () => {
+    const open = menu.classList.toggle('open');
+    menu.setAttribute('aria-hidden', !open);
+  });
+
+  // メニュー外クリックで閉じる
+  document.addEventListener('click', e => {
+    if (!menu.contains(e.target) && !toggle.contains(e.target)) {
+      menu.classList.remove('open');
+      menu.setAttribute('aria-hidden', true);
+    }
+  });
+});
+</script>
+
+<style>
+/* ===== サイドメニューのスタイル ===== */
+.side-menu {
+  position: fixed;
+  top: 0;
+  right: -240px;
+  width: 220px;
+  height: 100vh;
+  background: var(--card);
+  box-shadow: -2px 0 8px rgba(0,0,0,0.2);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: right 0.25s ease;
+  z-index: 1000;
+}
+.side-menu.open {
+  right: 0;
+}
+
+.menu-item {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.2s;
+  color: var(--text);
+}
+.menu-item:hover {
+  background: var(--accent);
+  color: white;
+}
+
+#menu-toggle {
+  font-size: 20px;
+  padding: 6px 10px;
+}
+
+/* 右上に自然に配置 */
+.site-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 16px;
+  background: var(--card);
+  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+  position: sticky;
+  top: 0;
+  z-index: 900;
+}
+.links {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.brand .logo {
+  font-weight: 700;
+  color: var(--accent);
+  text-decoration: none;
+}
+</style>
