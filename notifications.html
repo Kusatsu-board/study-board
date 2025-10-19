@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>通知 - Study Board</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/theme.js" defer></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script src="assets/app.js" defer></script>
+</head>
+<body>
+<div id="nav"></div>
+<main class="container">
+  <div class="card">
+    <h2>通知</h2>
+    <div id="notifications-list"></div>
+  </div>
+</main>
+
+<script>
+document.addEventListener('DOMContentLoaded', async ()=>{
+  const auth = firebase.auth();
+  const db = firebase.firestore();
+
+  auth.onAuthStateChanged(user=>{
+    if(!user) return;
+
+    SB.subscribeNotifications(async list=>{
+      const el = document.getElementById('notifications-list');
+      el.innerHTML = '';
+      if(!list||list.length===0){ el.innerHTML = '<div class="muted">通知はありません</div>'; return; }
+
+      list.forEach(n=>{
+        const row = document.createElement('div');
+        row.className = 'card';
+        row.style.marginBottom = '8px';
+
+        let innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center">
+          <div><strong>${n.type}</strong>
+            <div class="muted small">${n.data && n.data.text ? n.data.text : ''}</div>
+          </div>
+          <div style="display:flex;gap:8px">`;
+
+        if(n.type === 'friendRequest'){
+          innerHTML += `<button class="icon-btn approve">承認</button>
+                        <button class="icon-btn reject">拒否</button>`;
+        } else {
+          innerHTML += `<button class="icon-btn mark-read">既読</button>
+                        <button class="icon-btn goto">開く</button>`;
+        }
+        innerHTML += `</div></div>`;
+        row.innerHTML = innerHTML;
+        el.appendChild(row);
+
+        if(n.type === 'friendRequest'){
+          row.querySelector('.approve').addEventListener('click', async ()=>{
+            const fromUid = n.fromUid;
+            const toUid = n.toUid;
+
+            const fromRef = db.collection('users').doc(fromUid);
+            const toRef = db.collection('users').doc(toUid);
+            const notifRef = db.collection('notifications').doc(n.id);
+
+            try{
+              await db.runTransaction(async tr=>{
+                const fromSnap = await tr.get(fromRef);
+                const toSnap = await tr.get(toRef);
+                if(!fromSnap.exists || !toSnap.exists) throw 'ユーザー不明';
+
+                // 双方の friends 配列に追加
+                const fromFriends = fromSnap.data().friends || [];
+                const toFriends = toSnap.data().friends || [];
+                if(!fromFriends.includes(toUid)) fromFriends.push(toUid);
+                if(!toFriends.includes(fromUid)) toFriends.push(fromUid);
+
+                // 申請を削除
+                let requests = toSnap.data().friendRequests || [];
+                requests = requests.filter(x => x!==fromUid);
+
+                tr.update(fromRef, { friends: fromFriends });
+                tr.update(toRef, { friends: toFriends, friendRequests: requests });
+                tr.update(notifRef, { read:true });
+              });
+              showToast('友達申請を承認しました');
+              row.remove();
+            }catch(e){ console.error(e); showToast('承認に失敗しました'); }
+          });
+
+          row.querySelector('.reject').addEventListener('click', async ()=>{
+            const fromUid = n.fromUid;
+            const toUid = n.toUid;
+            const toRef = db.collection('users').doc(toUid);
+            const notifRef = db.collection('notifications').doc(n.id);
+            try{
+              await db.runTransaction(async tr=>{
+                const toSnap = await tr.get(toRef);
+                if(!toSnap.exists) return;
+
+                let requests = toSnap.data().friendRequests || [];
+                requests = requests.filter(x => x!==fromUid);
+
+                tr.update(toRef, { friendRequests: requests });
+                tr.update(notifRef, { read:true });
+              });
+              showToast('友達申請を拒否しました');
+              row.remove();
+            }catch(e){ console.error(e); showToast('拒否に失敗しました'); }
+          });
+
+        } else {
+          row.querySelector('.mark-read')?.addEventListener('click', ()=> SB.markNotificationRead(n.id));
+          row.querySelector('.goto')?.addEventListener('click', ()=>{
+            if(n.type === 'dm' && n.data && n.data.chatId) location.href = `dm.html?chat=${n.data.chatId}`;
+          });
+        }
+
+      });
+    });
+  });
+});
+</script>
+</body>
+</html>
